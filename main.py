@@ -133,6 +133,11 @@ async def start_training(request: Request) -> JSONResponse:
     train_type = request.query_params.get("train_mode", "lora")
     is_flux = request.query_params.get("flux", "False") == "True"
     is_anima = request.query_params.get("anima", "False") == "True"
+
+    # Parse accelerate (multi-GPU) settings
+    accelerate_enabled = request.query_params.get("accelerate_enabled", "False") == "True"
+    accelerate_num_processes = int(request.query_params.get("accelerate_num_processes", "2"))
+    accelerate_main_process_port = int(request.query_params.get("accelerate_main_process_port", "29500"))
     match [train_type, is_sdxl, is_flux, is_anima]:
         case ["lora", False, False, False]:
             app.state.TRAIN_SCRIPT = "train_network.py"
@@ -169,14 +174,30 @@ async def start_training(request: Request) -> JSONResponse:
             status_code=status.HTTP_400_BAD_REQUEST,
         )
     print(app.state.TRAIN_SCRIPT)
-    app.state.TRAINING_THREAD = subprocess.Popen(
-        [
-            f"{python}",
-            f"{Path(f'sd_scripts/{app.state.TRAIN_SCRIPT}').resolve()}",
+
+    # Build command based on accelerate settings
+    if accelerate_enabled:
+        # Multi-GPU training with accelerate launch
+        cmd = [
+            python,
+            "-m", "accelerate.commands.launch",
+            f"--num_processes={accelerate_num_processes}",
+            f"--main_process_port={accelerate_main_process_port}",
+            str(Path(f"sd_scripts/{app.state.TRAIN_SCRIPT}").resolve()),
             f"--config_file={config.resolve()}",
             f"--dataset_config={dataset.resolve()}",
         ]
-    )
+        print(f"Launching with accelerate: {accelerate_num_processes} processes")
+    else:
+        # Single GPU training (original behavior)
+        cmd = [
+            python,
+            str(Path(f"sd_scripts/{app.state.TRAIN_SCRIPT}").resolve()),
+            f"--config_file={config.resolve()}",
+            f"--dataset_config={dataset.resolve()}",
+        ]
+
+    app.state.TRAINING_THREAD = subprocess.Popen(cmd)
     if (
         "kill_tunnel_on_train_start" in server_config_dict
         and server_config_dict["kill_tunnel_on_train_start"]

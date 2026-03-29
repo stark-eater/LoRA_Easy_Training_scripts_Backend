@@ -61,10 +61,14 @@ def validate(args: dict) -> tuple[bool, bool, list[str], dict, dict]:
                 del args_data["run_name"]
         if "run_name_mode" in args_data: del args_data["run_name_mode"]
 
+    # Get num_processes from accelerate settings for multi-GPU step calculations
+    accelerate = args.get("accelerate", {})
+    num_processes = accelerate.get("num_processes", 1) if accelerate.get("enabled", False) else 1
+
     tag_data = {}
     if not over_errors:
-        validate_warmup_ratio(args_data, dataset_data)
-        validate_restarts(args_data, dataset_data)
+        validate_warmup_ratio(args_data, dataset_data, num_processes)
+        validate_restarts(args_data, dataset_data, num_processes)
         tag_data = validate_save_tags(dataset_data)
         validate_existing_files(args_data)
         validate_optimizer(args_data)
@@ -255,7 +259,7 @@ def validate_subset(args: dict) -> tuple[bool, list[str], dict]:
     return passed_validation, errors, output_args
 
 
-def validate_restarts(args: dict, dataset: dict) -> None:
+def validate_restarts(args: dict, dataset: dict, num_processes: int = 1) -> None:
     if "lr_scheduler_num_cycles" not in args:
         return
     if "lr_scheduler_type" not in args:
@@ -267,13 +271,14 @@ def validate_restarts(args: dict, dataset: dict) -> None:
             dataset,
             args["max_train_epochs"],
             args.get("gradient_accumulation_steps", 1),
+            num_processes,
         )
     steps = steps // args["lr_scheduler_num_cycles"]
     args["lr_scheduler_args"].append(f"first_cycle_max_steps={steps}")
     #del args["lr_scheduler_num_cycles"]
 
 
-def validate_warmup_ratio(args: dict, dataset: dict) -> None:
+def validate_warmup_ratio(args: dict, dataset: dict, num_processes: int = 1) -> None:
     if "warmup_ratio" not in args:
         return
     if "max_train_steps" in args:
@@ -283,6 +288,7 @@ def validate_warmup_ratio(args: dict, dataset: dict) -> None:
             dataset,
             args["max_train_epochs"],
             args.get("gradient_accumulation_steps", 1),
+            num_processes,
         )
     steps = round(steps * args["warmup_ratio"])
     if "lr_scheduler_type" in args:
@@ -354,6 +360,7 @@ def calculate_steps(
     dataset_args: dict[str, dict | list[dict]],
     num_epochs: int,
     grad_acc_steps: int = 1,
+    num_processes: int = 1,
 ) -> int:
     general_args: dict = dataset_args["general"]
     subsets: list = dataset_args["subsets"]
@@ -390,4 +397,4 @@ def calculate_steps(
     steps_before_acc = sum(
         math.ceil(len(bucket) / general_args["batch_size"]) for bucket in bucketManager.buckets
     )
-    return math.ceil(steps_before_acc / grad_acc_steps) * num_epochs
+    return math.ceil(steps_before_acc / grad_acc_steps / num_processes) * num_epochs
